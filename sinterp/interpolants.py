@@ -156,6 +156,43 @@ class ConstantNoise(Interpolator):
     
     def __call__(self, x, y, z, t):
         return self.alpha(t) * x + self.beta(t) * y + self.gamma(t) * z
+    
+class OneSidedLinear(Interpolator):
+    """
+    A simple one-sided interpolant: x_t = (1-t)z + t*x_1
+    Bridges noise 'z' to data 'x_1'.
+    """
+    def alpha(self, t):
+        return 1.0 - t
+
+    def beta(self, t):
+        return t
+
+    def gamma(self, t):
+        return 0.0 # Always zero for this formulation
+
+    def __call__(self, x0, x1, z, t):
+        # No third noise term 'e' is needed
+        return self.alpha(t) * z + self.beta(t) * x1
+
+class OneSidedSBDM(Interpolator):
+    """
+    A variance-preserving one-sided interpolant used in SBDMs.
+    x_t = sqrt(1-t^2)*z + t*x_1
+    """
+    def alpha(self, t):
+        # This is the noise schedule, often written as sqrt(bar(alpha_t)) in papers
+        return jnp.sqrt(1.0 - t**2)
+
+    def beta(self, t):
+        # This is the data schedule
+        return t
+
+    def gamma(self, t):
+        return 0.0 # Always zero
+
+    def __call__(self, z, x1, t):
+        return self.alpha(t) * z + self.beta(t) * x1
 
 interpolators = [
     LinearDeterministic,
@@ -165,6 +202,7 @@ interpolators = [
     EncodingDecodingStochastic,
     LowNoiseEncodingDecodingStochastic,
     ConstantNoise,
+    TrigonometricStochastic,
 ]
 
 def get_interp(name, sigma=1e-3):
@@ -182,5 +220,7 @@ def get_interp(name, sigma=1e-3):
         return LowNoiseEncodingDecodingStochastic()
     elif name == "ConstantNoise":
         return ConstantNoise(sigma=sigma)
+    elif name == "TrigonometricStochastic":
+        return TrigonometricStochastic()
     else:
         raise ValueError(f"Unknown interp name: {name}")
