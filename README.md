@@ -1,49 +1,60 @@
-The repository provides implementations of [Stochastic interpolants](https://arxiv.org/abs/2209.03003).
+# sinterp
 
-Specifically, it provides implementations of;
+[Stochastic interpolants](https://arxiv.org/abs/2303.08797) in
+[JAX](https://github.com/google/jax) / [Equinox](https://github.com/patrick-kidger/equinox):
+interpolants, noise–data couplings, the stochastic fields (velocity, drift,
+score, denoisers) and their losses, plus exact Gaussian / Gaussian-mixture
+references for testing.
 
-- the many variants of interpolant
-- couplings between the target and source distributions
-- various different losses (for the drift, velocity, and score fields)
-- an exact implementation of stochastic interpolants for Gaussian distributions and Gaussian mixtures
+| module | contents |
+| :--- | :--- |
+| `sinterp.interpolants` | one- and two-sided interpolants (linear, trigonometric, encoding–decoding, ...) |
+| `sinterp.stochasticfield` | velocity / drift / score / $\eta$-prediction fields and their training losses |
+| `sinterp.field_factory` | build fields for array- and dict-valued (block) data |
+| `sinterp.couplings` | noise–data couplings, below |
+| `sinterp.exact_si_gaussian`, `exact_si_gmm`, `exact_ot_gmm` | closed-form interpolant fields for Gaussian and GMM targets |
 
 ## Couplings
 
-We implement the;
+- `IndependentCoupling`: $p(x_0, x_1) = p(x_0)\,p(x_1)$.
+- `SinkhornCoupling`: minibatch entropic OT
+  ([Multisample Flow Matching](https://proceedings.mlr.press/v202/pooladian23a.html),
+  [Tong et al. 2023](https://arxiv.org/abs/2302.00482)); fixed-iteration
+  log-domain Sinkhorn by default.
+- `ExactOTCoupling` / `ExactConditionalCoupling`: minibatch exact OT (a
+  Hungarian permutation, so every data row keeps one real noise draw).
+- `C2OTCoupling`: condition-aware OT
+  ([Cheng & Schwing, ICCV 2025](https://arxiv.org/abs/2503.10636)), with the
+  adaptive condition weight computed in closed form. `C2OTCoupling(w=0.0)` is
+  plain Hungarian matching. `couple_blocks` couples dict-valued data one block
+  at a time in topological order, with each block's parents as the condition: a
+  minibatch Knothe–Rosenblatt coupling, which is what makes block-triangular
+  ("dynamic") conditional flows consistent (see
+  [structflow](https://github.com/act65/structflow)).
 
-- independent coupling
-- minibatch optimal transport coupling (see [Multisample Flow Matching](http://proceedings.mlr.press/v202/pooladian23a/pooladian23a.pdf) and [Stochastic interpolants with data-dependent couplings](https://arxiv.org/abs/2310.03725) for more details)
+Coupling a full vector with OT is not neutral for *conditional* models: the
+noise paired with a block then depends on that block's conditions. Use
+independent pairing or `C2OTCoupling` when a model is conditioned on part of
+its input.
 
-## Interpolants
-
-We plot the interpolants defined in `sinterp/interpolants.py`.
-Because many of the interpolants require that the coeddicients sum to 1, we also provide plots of the coefficients mapped to the simplex.
+See [`sinterp/README.md`](sinterp/README.md) for the mathematics, and `play/`
+for plots of the interpolants.
 
 ![Const noise](play/viz-interpolators/ConstantNoise.png?raw=true)
-![EDS](play/viz-interpolators/EncodingDecodingStochastic.png?raw=true)
-![LD](play/viz-interpolators/LinearDeterministic.png?raw=true)
 ![LS](play/viz-interpolators/LinearStochastic.png?raw=true)
-![SD](play/viz-interpolators/SquaredDeterministic.png?raw=true)
-![SS](play/viz-interpolators/SquaredStochastic.png?raw=true)
 ![TS](play/viz-interpolators/TrigonometricStochastic.png?raw=true)
 
+## Install
 
-## Exact implementation
+Install JAX for your hardware first (`pip install "jax[cpu]"` or
+`"jax[cuda12]"`), then
 
-The exact implementation of stochastic interpolants for Gaussian distributions and Gaussian mixtures is provided in `sinterp.exact_si_gaussian` and `sinterp.exact_si_gmm` respectively. The equations are taken from page 35 [Stochastic interpolants](https://arxiv.org/abs/2209.03003).
+```bash
+pip install "sinterp-jax @ git+https://github.com/act65/sinterp@v0.2.0"   # import sinterp
+```
 
-For example, here is an example that maps from a 3 mode 1D GMM to a 2 mode 1D GMM. 
+or, from a clone, `pip install -e ".[dev]"` and run `pytest`.
 
-![drift of LD for a GMM 3-2](play/pbs-fields/b_LinearStochastic-3-2.png?raw=true)
-![velocity of LD for a GMM 3-2](play/pbs-fields/v_LinearStochastic-3-2.png?raw=true)
-![score of LD for a GMM 3-2](play/pbs-fields/s_LinearStochastic-3-2.png?raw=true)
-![trajectories of LD for a GMM 3-2](play/pbs-fields/trajectories_LinearStochastic-3-2.png?raw=true)
+## License
 
-You can find a few other examples in the `play/pbs-fields` directory.
-The exact GMM calcs support any dimensionality, and any number of gaussian distributions.
-
-<!-- ## Losses
-
-$$
-\mathcal L
-$$ -->
+GPL-3.0, see [LICENSE](LICENSE).

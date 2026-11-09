@@ -8,46 +8,43 @@ exact calculation of the stoch interpolant between gaussian distributions.
 supports any dimensionality, and any number of gaussian distributions.
 """
 
-def interp_m(m1, m2, t):
-    return m1 * (1 - t) + m2 * t
-
-def interp_c(c1, c2, t, gamma=0.0):
-    return c1 * (1 - t)**2 + c2 * t**2 + gamma*jnp.eye(c1.shape[0])
-
 def construct_covar_interp(interp):
-    def interp_c(c1, c2, t):
-        return interp.alpha(t)**2 * c1 + interp.beta(t)**2 * c2 + interp.gamma(t)**2 * jnp.eye(c1.shape[0])
+    def interp_c(c0, c1, ce, t):
+        return interp.alpha(t)**2 * c0 + interp.beta(t)**2 * c1 + interp.gamma(t)**2 * ce
     return interp_c
 
-def construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s):
-    # assert m1.shape == m2.shape
-    # assert c1.shape == c2.shape
-    # assert c1.size == m1.size * m1.size
+def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
+    # assert m0.shape == m1.shape
+    # assert c0.shape == c1.shape
+    # assert c0.size == m0.size * m0.size
 
-    e = jnp.zeros(m1s[0].shape)
+    if ce is None:
+        ce = jnp.eye(m0s[0].shape[0])
+
+    e = jnp.zeros(m0s[0].shape)
 
     interp_c = construct_covar_interp(interp)
 
     dmtdt = jacrev(interp, argnums=3)
-    dctdt = jacrev(interp_c, argnums=2)
+    dctdt = jacrev(interp_c, argnums=3)
 
     # vmap over gaussians in dist1. 
     i_gaussian_pdf = vmap(utils.gaussian_pdf, in_axes=(None, 0, 0))
     # vmap over gaussians in dist2.
     ij_gaussian_pdf = vmap(i_gaussian_pdf, in_axes=(None, 0, 0))
     
-    n = len(m1s)
-    m = len(m2s)
-    d = m1s[0].size
+    n = len(m0s)
+    m = len(m1s)
+    d = m0s[0].size
 
-    weight_ij = jnp.array([[w1s[i] * w2s[j] for i in range(n)] for j in range(m)])
+    weight_ij = jnp.array([[w0s[i] * w1s[j] for i in range(n)] for j in range(m)])
 
     i_inv = vmap(jnp.linalg.inv, in_axes=(0,))
     ij_inv = vmap(i_inv, in_axes=(0,))
 
     def p(z, t):  # the density
-        means = jnp.array([[interp(m1, m2, e, t) for m1 in m1s] for m2 in m2s]).reshape((m, n, 1))
-        covs = jnp.array([[interp_c(c1, c2, t) for c1 in c1s] for c2 in c2s]).reshape((m, n, d, d))
+        means = jnp.array([[interp(m0, m1, e, t) for m0 in m0s] for m1 in m1s]).reshape((m, n, d))
+        covs = jnp.array([[interp_c(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
         p_ij = ij_gaussian_pdf(z, means, covs)
 
@@ -57,8 +54,8 @@ def construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s):
         """
         -C^{-1} (z - m)
         """
-        means = jnp.array([[interp(m1, m2, e, t) for m1 in m1s] for m2 in m2s]).reshape((m, n, 1))
-        covs = jnp.array([[interp_c(c1, c2, t) for c1 in c1s] for c2 in c2s]).reshape((m, n, d, d))
+        means = jnp.array([[interp(m0, m1, e, t) for m0 in m0s] for m1 in m1s]).reshape((m, n, d))
+        covs = jnp.array([[interp_c(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
         c_m1 = ij_inv(covs)
         p_ij = ij_gaussian_pdf(z, means, covs)
@@ -77,15 +74,15 @@ def construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s):
 
         return numer / denom
 
-    def v(z, t):  # the velocity
-        """
+    def b(z, t):  # the velocity
+        r"""
         \dot m - \frac{1}{2} \dot C C^{-1} (z - m)
         """
-        means = jnp.array([[interp(m1, m2, e, t) for m1 in m1s] for m2 in m2s]).reshape((m, n, 1))
-        covs = jnp.array([[interp_c(c1, c2, t) for c1 in c1s] for c2 in c2s]).reshape((m, n, d, d))
+        means = jnp.array([[interp(m0, m1, e, t) for m0 in m0s] for m1 in m1s]).reshape((m, n, d))
+        covs = jnp.array([[interp_c(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
-        dms_ij = jnp.array([[dmtdt(m1, m2, e, t) for m1 in m1s] for m2 in m2s]).reshape((m, n, 1))
-        dcs_ij = jnp.array([[dctdt(c1, c2, t) for c1 in c1s] for c2 in c2s]).reshape((m, n, d, d))
+        dms_ij = jnp.array([[dmtdt(m0, m1, e, t) for m0 in m0s] for m1 in m1s]).reshape((m, n, d))
+        dcs_ij = jnp.array([[dctdt(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
         c_m1 = ij_inv(covs)
         p_ij = ij_gaussian_pdf(z, means, covs)
@@ -105,4 +102,4 @@ def construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s):
         return numer / denom
     
     
-    return p, v, s
+    return p, b, s

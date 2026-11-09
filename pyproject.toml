@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sinterp-jax"
+version = "0.2.0"
+description = "Stochastic interpolants in JAX: interpolants, noise-data couplings (OT, C2OT, per-block Knothe-Rosenblatt), stochastic fields and exact Gaussian/GMM references."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Alexander Telfar", email = "te1farac@gmail.com" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["numpy", "scipy", "matplotlib", "jax", "equinox", "ott-jax==0.6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/act65/sinterp"
+
+[tool.setuptools.packages.find]
+include = ["sinterp*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "expensive: marks tests as expensive (run with '--run-expensive')",
+]

@@ -2,13 +2,6 @@ import jax.numpy as jnp
 from jax import random
 import matplotlib.pyplot as plt
 
-def get_fokker_plank_eqns(b, s, eps=1.0):
-    def forward(z, t):
-        return b(z, t) + eps * s(z, t)
-    def backward(z, t):
-        return b(z, t) - eps * s(z, t)
-    return forward, backward
-
 def get_v(b, s, interp):
     def v(z, t):
         return b(z, t) + interp.dgammadt(t).flatten() * interp.gamma(t) * s(z, t)
@@ -31,15 +24,15 @@ def wrap_plot(plt_fn, a, b, n, px, py):
     f, (a0, a1, a2) = plt.subplots(3, 1, gridspec_kw={'height_ratios': [1, 5, 1]})
 
     plt.subplot(3, 1, 1)
-    plt.plot(x, px.b_p(x[:, None]))
+    plt.plot(x, px.b_prob(x[:, None]))
     plt.xlim([a, b])
     
-    plt.subplot(3, 1, 3)
-    plt.plot(y, py.b_p(y[:, None]))
-    plt.xlim([a, b])
-
     plt.subplot(3, 1, 2)
     plt_fn(z, t, a, b)
+    plt.xlim([a, b])
+
+    plt.subplot(3, 1, 3)
+    plt.plot(y, py.b_prob(y[:, None]))
     plt.xlim([a, b])
 
 def plot_sf(z, t, a, b, p):
@@ -57,7 +50,7 @@ def plot_vf(z, t, a, b, k, v):
     Z, T = jnp.meshgrid(z, t)
     Z = Z.reshape(-1, 1)
     T = T.reshape(-1, 1)
-    v_z = v(z[:, None], t[:, None])[:, :, 0].T
+    v_z = v(z[:, None], t[:, None])[:, :, 0].T.squeeze()
 
     plt.quiver(Z, T, v_z, -1*jnp.ones_like(v_z), width=0.001)
     ax = plt.gca()
@@ -67,9 +60,9 @@ def plot_vf(z, t, a, b, k, v):
 
 def plot_trajectories(z, t, a, b, n, px, py, key, interp):
     key, subkey = random.split(key)
-    xs = px.sample(subkey, n)
+    xs = px.b_sample(subkey, n)
     key, subkey = random.split(key)
-    ys = py.sample(subkey, n)
+    ys = py.b_sample(subkey, n)
 
     k = t.shape[0]  # number of time steps
     e = random.normal(key, (n, k))
@@ -83,3 +76,48 @@ def plot_trajectories(z, t, a, b, n, px, py, key, interp):
     ax.invert_yaxis()
     ax.axes.xaxis.set_visible(False)
     plt.ylabel('t')
+
+
+def plot_sf_and_mode_trajectory(z, t, a, b, p, v):
+    """
+    Plots the scalar field p(z, t) and overlays the trajectory of the mode.
+
+    Args:
+        z (jnp.ndarray): Array of z values for the plot grid.
+        t (jnp.ndarray): Array of t values for the plot grid.
+        a (float): Lower bound of the plot.
+        b (float): Upper bound of the plot.
+        p (callable): The probability density function p(z, t).
+        v (callable): The velocity field v(z, t).
+    """
+    # First, plot the background probability density heatmap
+    plot_sf(z, t, a, b, p)
+
+    # --- Calculate the mode trajectory ---
+
+    # 1. Find the mode of the initial distribution p(z, t=0)
+    # We do this by evaluating p on a fine grid and finding the argmax.
+    z_fine_grid = jnp.linspace(a, b, 2000)
+    # The vmapped 'p' expects t to have a shape, so we provide jnp.array([0.0])
+    p_at_t0 = p(z_fine_grid[:, None], jnp.array([0.0])).flatten()
+    initial_mode = z_fine_grid[jnp.argmax(p_at_t0)]
+
+    # 2. Numerically integrate the velocity field v(z, t) using Euler's method
+    dt = t[1] - t[0]  # Assumes uniform time steps
+    mode_path = [initial_mode]
+
+    for i in range(len(t) - 1):
+        current_z = mode_path[-1]
+        current_t = t[i]
+        
+        # The vmapped 'v' expects inputs with batch dimensions, e.g., (1, 1)
+        # It returns a velocity with shape (1, 1, 1), so we index to get the scalar.
+        velocity = v(jnp.array([[current_z]]), jnp.array([[current_t]]))[0, 0, 0]
+        
+        # Euler step
+        next_z = current_z + velocity * dt
+        mode_path.append(next_z)
+
+    # 3. Plot the calculated trajectory
+    plt.plot(mode_path, t, color='white', linestyle='--', linewidth=2.5, label='Mode Trajectory')
+    plt.legend()
