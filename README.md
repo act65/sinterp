@@ -57,4 +57,4 @@ or, from a clone, `pip install -e ".[dev]"` and run `pytest`.
 
 ## License
 
-GPL-3.0, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
