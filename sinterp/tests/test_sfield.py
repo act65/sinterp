@@ -177,3 +177,36 @@ def test_total_loss_is_sum_of_the_two_component_losses(sample_data):
     for field, names in cases:
         want = sum(getattr(field, n)(x, y, e, t) for n in names)
         assert jnp.allclose(field.total_loss(x, y, e, t), want), type(field).__name__
+
+
+# --- PyTree (block) states: every field class, every derived quantity ---
+
+def _two_model_fields(interp):
+    from sinterp.stochasticfield import TwoSidedField_b_s, TwoSidedField_x0_x1, TwoSidedField_b_eta1
+    a, b = MockVModel(scale=1.5), MockEtaZModel(scale=0.5)
+    return {
+        "v_etaz": TwoSidedField_v_etaz(interp, a, b),
+        "b_s": TwoSidedField_b_s(interp, a, b),
+        "x0_x1": TwoSidedField_x0_x1(interp, a, b),
+        "b_eta1": TwoSidedField_b_eta1(interp, a, b),
+    }
+
+
+@pytest.mark.parametrize("name", ["v_etaz", "b_s", "x0_x1", "b_eta1"])
+def test_dict_state_equals_per_leaf_arrays(name):
+    """A dict (block) state must give, leaf by leaf, exactly what the same field gives on each
+    leaf as an array: the models act leafwise, so every derived quantity (b, v, s, eta0, eta1,
+    etaz) is leafwise too. Catches plain arithmetic on PyTrees (TypeError) and any mixing of
+    leaves."""
+    interp = TrigonometricVPStochastic()
+    field = _two_model_fields(interp)[name]
+    k1, k2 = jax.random.split(jax.random.PRNGKey(3))
+    x = {"a": jax.random.normal(k1, (4,)), "b": jax.random.normal(k2, (2,))}
+    t = 0.37
+    for getter in ("get_velocity_b", "get_velocity_v", "get_score_s",
+                   "get_denoiser_eta0", "get_denoiser_eta1", "get_denoiser_etaz"):
+        out = getattr(field, getter)(x, t)
+        assert set(out) == {"a", "b"}, getter
+        for leaf in ("a", "b"):
+            want = getattr(field, getter)(x[leaf], t)
+            assert jnp.allclose(out[leaf], want, atol=1e-6), (getter, leaf)

@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import random
 import matplotlib.pyplot as plt
@@ -10,8 +11,14 @@ def get_v(b, s, interp):
 def extract_params(dist):
     return [d.mu for d in dist.dists], [d.std[None, None] for d in dist.dists], [d for d in dist.weights]
 
+def gaussian_logpdf(x, mean, cov):
+    """log N(x; mean, cov), computed with a Cholesky solve (no explicit inverse or det)."""
+    L = jnp.linalg.cholesky(cov)
+    r = jax.scipy.linalg.solve_triangular(L, x - mean, lower=True)
+    return -0.5 * r @ r - jnp.sum(jnp.log(jnp.diag(L))) - 0.5 * len(mean) * jnp.log(2 * jnp.pi)
+
 def gaussian_pdf(x, mean, cov):
-    return jnp.exp(-0.5 * (x - mean) @ jnp.linalg.inv(cov) @ (x - mean)) * jnp.linalg.det(cov)**(-0.5) * (2 * jnp.pi)**(-0.5 * len(mean))
+    return jnp.exp(gaussian_logpdf(x, mean, cov))
 
 def wrap_plot(plt_fn, a, b, n, px, py):
     x = jnp.linspace(a, b, n)

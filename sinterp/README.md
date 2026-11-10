@@ -227,8 +227,9 @@ with similar conditions:
 ![conditional couplings](../docs/images/couplings/conditional.png?raw=true)
 
 With a condition that takes only a few values (here two), most pairs with equal
-conditions can never be excluded, the adaptive target is unreachable, and $w$
-grows until conditions cannot be mixed at all: the same as `cond_dist='discrete'`.
+conditions can never be excluded and the adaptive target is unreachable. The rule
+then returns $w = \infty$ and matches within equal conditions exactly, the same
+matching as `cond_dist='discrete'`.
 
 **Per-block coupling.** For dict-valued data whose blocks are modelled by
 conditional fields (a block-triangular, or "dynamic", flow),
@@ -255,9 +256,8 @@ conditioned on part of its input.
   N(0, ce)$. Each pair of components gives a Gaussian with mean
   $m_t = \alpha m_0 + \beta m_1$ and covariance
   $C_t = \alpha^2 C_0 + \beta^2 C_1 + \gamma^2 C_e$; $b = \dot m_t + \tfrac12 \dot C_t C_t^{-1}(z - m_t)$
-  and $s = -C_t^{-1}(z - m_t)$ per pair, combined with posterior weights.
-  The weights are ratios of raw densities, so far from every component
-  (relative to its width) they underflow in float32 and return `nan`.
+  and $s = -C_t^{-1}(z - m_t)$ per pair, combined with posterior weights
+  (a softmax of log-densities, so the fields stay finite far from every component).
 - `exact_si_gaussian.construct_p_b_s(m1, m2, c1, c2, interp)`: the single
   Gaussian case; returns `(p, v, s)` with covariance
   $\alpha^2 C_1 + \beta^2 C_2 + \gamma^2 I$ (`v` is the drift $b$, which equals the

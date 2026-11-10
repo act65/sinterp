@@ -236,8 +236,12 @@ class C2OTCoupling(Coupling):
         k = int(np.floor(target * D.size - np.sum(~pos & (D <= diag)) + 1e-9))
         tau = ((diag - D) / np.where(pos, Cc, 1.0))[pos]
         tau = tau[tau >= 0]
-        if k < 0 or tau.size <= k:               # target unattainable: keep the reference behaviour
-            return C2OTCoupling._adaptive_w_bisect(D, Cc, target)
+        if k < 0 or tau.size <= k:
+            # Target unattainable: pairs with equal conditions (Cc = 0, e.g. discrete or tied
+            # conditions) already exceed it, so no finite w reaches it. The limit w -> inf is
+            # matching within equal conditions; _host_match does that exactly instead of
+            # adding a ~1e18 weight that swamps D.
+            return np.inf
         w = float(np.nextafter(np.partition(tau, tau.size - k - 1)[tau.size - k - 1], np.inf))
         for _ in range(8):                       # guard against rounding at the boundary
             if C2OTCoupling._ratio(D, Cc, w) <= target:
@@ -256,7 +260,7 @@ class C2OTCoupling(Coupling):
             cost = np.where(Cc > 0, 1e6 * (np.abs(D).max() + 1.0), D)
         else:
             w = (self._adaptive_w(D, Cc, self.target_ratio) if self.w is None else float(self.w))
-            cost = D + w * Cc
+            cost = (D + w * Cc) if np.isfinite(w) else np.where(Cc > 0, 1e6 * (np.abs(D).max() + 1.0), D)
         _, cols = linear_sum_assignment(cost)
         return cols.astype(np.int32), np.float32(w)
 

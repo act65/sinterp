@@ -86,7 +86,7 @@ class SquaredStochastic(Interpolator):
         return jnp.where(t < 0.5, 0, 4*(t-0.5)**2)
     
     def gamma(self, t):
-        return jnp.where(t < 0.5, 4*t*(1-t), 4*(1-t)*t)
+        return 4 * t * (1 - t)
     
     def __call__(self, x, y, z, t):
         return jax.tree_util.tree_map(lambda _x, _y, _z: self.alpha(t) * _x + self.beta(t) * _y + self.gamma(t) * _z, x, y, z)

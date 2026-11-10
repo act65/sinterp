@@ -253,14 +253,15 @@ class TwoSidedField_b_s(TwoSidedField):
 
     def get_denoiser_etaz(self, x_t, t, *args):
         s = self.get_score_s(x_t, t, *args)
-        return -self.interpolator.gamma(t) * s
+        gamma = self.interpolator.gamma(t)
+        return jax.tree_util.tree_map(lambda a: -gamma * a, s)
 
     def get_velocity_v(self, x_t, t, *args):
         b = self.get_velocity_b(x_t, t, *args)
         s = self.get_score_s(x_t, t, *args)
         gamma = self.interpolator.gamma(t)
         gamma_dot = self.interpolator.dgammadt(t)
-        return b + (gamma * gamma_dot) * s
+        return jax.tree_util.tree_map(lambda b_, s_: b_ + (gamma * gamma_dot) * s_, b, s)
 
     def get_denoiser_eta0(self, x_t, t, *args):
         v = self.get_velocity_v(x_t, t, *args)
@@ -301,8 +302,8 @@ class TwoSidedField_x0_x1(TwoSidedField):
     def get_velocity_v(self, x_t, t, *args):
         eta0 = self.get_denoiser_eta0(x_t, t, *args)
         eta1 = self.get_denoiser_eta1(x_t, t, *args)
-        return (self.interpolator.dalphadt(t) * eta0 + 
-                self.interpolator.dbetadt(t) * eta1)
+        da, db = self.interpolator.dalphadt(t), self.interpolator.dbetadt(t)
+        return jax.tree_util.tree_map(lambda e0, e1: da * e0 + db * e1, eta0, eta1)
 
     def get_denoiser_etaz(self, x_t, t, *args):
         eta0 = self.get_denoiser_eta0(x_t, t, *args)
@@ -311,24 +312,24 @@ class TwoSidedField_x0_x1(TwoSidedField):
         alpha = self.interpolator.alpha(t)
         beta = self.interpolator.beta(t)
         gamma = self.interpolator.gamma(t)
-        
-        numerator = x_t - alpha * eta0 - beta * eta1
-        
         safe_gamma = jnp.where(jnp.abs(gamma) > 1e-5, gamma, 1.0)
-        eta_z = numerator / safe_gamma
-        return jnp.where(jnp.abs(gamma) > 1e-5, eta_z, jnp.zeros_like(x_t))
+
+        def _etaz(x, e0, e1):
+            eta_z = (x - alpha * e0 - beta * e1) / safe_gamma
+            return jnp.where(jnp.abs(gamma) > 1e-5, eta_z, jnp.zeros_like(x))
+        return jax.tree_util.tree_map(_etaz, x_t, eta0, eta1)
 
     def get_velocity_b(self, x_t, t, *args):
         v = self.get_velocity_v(x_t, t, *args)
         eta_z = self.get_denoiser_etaz(x_t, t, *args)
-        return v + self.interpolator.dgammadt(t) * eta_z
+        dg = self.interpolator.dgammadt(t)
+        return jax.tree_util.tree_map(lambda v_, ez: v_ + dg * ez, v, eta_z)
 
     def get_score_s(self, x_t, t, *args):
         eta_z = self.get_denoiser_etaz(x_t, t, *args)
         gamma = self.interpolator.gamma(t)
         safe_gamma = jnp.where(jnp.abs(gamma) > 1e-5, gamma, 1.0)
-        score = -eta_z / safe_gamma
-        return jnp.where(jnp.abs(gamma) > 1e-5, score, jnp.zeros_like(score))
+        return jax.tree_util.tree_map(lambda ez: jnp.where(jnp.abs(gamma) > 1e-5, -ez / safe_gamma, jnp.zeros_like(ez)), eta_z)
 
     def total_loss(self, x, y, e, t, *args):
         return self.loss_eta0(x, y, e, t, *args) + self.loss_eta1(x, y, e, t, *args)

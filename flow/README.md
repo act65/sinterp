@@ -38,7 +38,8 @@ Solves `dx/dt = v(x, t)` on a fixed grid of `n_steps` steps.
 | `push_forward(p_x0, x0)` / `push_backward(p_x1, x1)` | the same in probability space |
 | `b_forward`, `b_backward`, `b_*_trajectory`, `b_push_*` | batched, JIT-compiled versions |
 
-The divergence integral is a left Riemann sum along the trajectory. It uses the
+The divergence integral uses the trapezoid rule on the trajectory grid (second order
+in the step size, one more divergence evaluation than steps). It uses the
 exact divergence (`divergence_jvp`, one JVP per dimension) by default, or the
 Hutchinson estimator (`divergence_hutchinson`, one JVP with a Gaussian probe,
 fresh at every step) when a `key` is passed.

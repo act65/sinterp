@@ -214,6 +214,25 @@ class TestC2OTCoupling:
             if w > 0:
                 assert C._ratio(D, Cc, w * (1 - 1e-9)) > target
 
+    def test_unattainable_target_matches_within_conditions(self):
+        """With few distinct condition values, equal-condition pairs alone exceed the target
+        ratio, so no finite weight reaches it. The adaptive rule then returns w = inf and the
+        matching is the exact within-condition optimum (the cond_dist='discrete' matching),
+        not a ~1e18 weight that swamps the transport cost. Catches a regression to a huge
+        finite w (precision loss in D) or to plain OT ignoring the condition."""
+        import numpy as np
+        from sinterp.couplings import C2OTCoupling as C
+        rng = np.random.default_rng(0)
+        x, e = rng.normal(size=(64, 2)), rng.normal(size=(64, 2))
+        c = np.repeat(np.array([[0.0], [1.0]]), 32, axis=0)          # 2 condition values
+        D = np.asarray(C._sqdist(jnp.asarray(x), jnp.asarray(e)), np.float64)
+        Cc = np.asarray(C._sqdist(jnp.asarray(c), jnp.asarray(c)), np.float64)
+        assert np.isinf(C._adaptive_w(D, Cc, 0.05))
+        cols, w = C(target_ratio=0.05)._host_match(D, Cc, True)
+        cols_disc, _ = C(cond_dist="discrete")._host_match(D, Cc, True)
+        assert np.isinf(w) and np.array_equal(cols, cols_disc)
+        assert np.all(c[cols, 0] == c[:, 0])                          # never crosses conditions
+
     def test_batched_couple_blocks_equals_per_block_matching(self, key):
         """couple_blocks matches all blocks in one host call; the result must be exactly the
         per-block C2OT matchings (block noise matched to block values, parents as condition)."""

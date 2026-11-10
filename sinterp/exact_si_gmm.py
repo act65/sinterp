@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import vmap, jacrev, jit
 from sinterp import utils
@@ -30,14 +31,22 @@ def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
 
     # vmap over gaussians in dist1. 
     i_gaussian_pdf = vmap(utils.gaussian_pdf, in_axes=(None, 0, 0))
+    i_gaussian_logpdf = vmap(utils.gaussian_logpdf, in_axes=(None, 0, 0))
     # vmap over gaussians in dist2.
     ij_gaussian_pdf = vmap(i_gaussian_pdf, in_axes=(None, 0, 0))
+    ij_gaussian_logpdf = vmap(i_gaussian_logpdf, in_axes=(None, 0, 0))
     
     n = len(m0s)
     m = len(m1s)
     d = m0s[0].size
 
     weight_ij = jnp.array([[w0s[i] * w1s[j] for i in range(n)] for j in range(m)])
+
+    def responsibilities(z, means, covs):
+        """Posterior weights of the (j, i) components at z, a softmax of log-densities, so
+        they stay finite far from every component (ratios of raw densities underflow to 0/0)."""
+        logits = jnp.log(weight_ij) + ij_gaussian_logpdf(z, means, covs)
+        return jax.nn.softmax(logits.ravel()).reshape(logits.shape)
 
     i_inv = vmap(jnp.linalg.inv, in_axes=(0,))
     ij_inv = vmap(i_inv, in_axes=(0,))
@@ -58,7 +67,7 @@ def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
         covs = jnp.array([[interp_c(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
         c_m1 = ij_inv(covs)
-        p_ij = ij_gaussian_pdf(z, means, covs)
+        r_ij = responsibilities(z, means, covs)
         
         # vmap over the innermost function to ensure the matmul works
         inter = lambda c, diff: c @ diff
@@ -68,11 +77,7 @@ def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
         intermediate = -ij_inter(c_m1, z[None, None, :] - means)
 
         # now combine it all
-        numer = jnp.sum(weight_ij[:, :, None] * intermediate
-                      * p_ij[:, :, None], axis=(0, 1))
-        denom = jnp.sum(weight_ij * p_ij, axis=(0, 1))
-
-        return numer / denom
+        return jnp.sum(r_ij[:, :, None] * intermediate, axis=(0, 1))
 
     def b(z, t):  # the velocity
         r"""
@@ -85,7 +90,7 @@ def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
         dcs_ij = jnp.array([[dctdt(c0, c1, ce, t) for c0 in c0s] for c1 in c1s]).reshape((m, n, d, d))
 
         c_m1 = ij_inv(covs)
-        p_ij = ij_gaussian_pdf(z, means, covs)
+        r_ij = responsibilities(z, means, covs)
         
         # vmap over the innermost function to ensure the matmuls work
         inter = lambda dc, c, diff: 0.5 * dc @ c @ diff
@@ -94,12 +99,8 @@ def construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0s, w1s, ce=None):
         intermediate = ij_inter(dcs_ij, c_m1, z[None, None, :] - means)
 
         # now combine it all
-        numer = jnp.sum(weight_ij[:, :, None] * p_ij[:, :, None] * 
-            (dms_ij + intermediate)  # velocity = m_dot + 0.5 * c_dot * c^-1 * (z - m)
-                      , axis=(0, 1))
-        denom = jnp.sum(weight_ij * p_ij, axis=(0, 1))
-
-        return numer / denom
+        # velocity = m_dot + 0.5 * c_dot * c^-1 * (z - m), averaged over the responsibilities
+        return jnp.sum(r_ij[:, :, None] * (dms_ij + intermediate), axis=(0, 1))
     
     
     return p, b, s

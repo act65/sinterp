@@ -79,7 +79,9 @@ class Flow(eqx.Module):
 
     def accumulate(self, xts, ts, div_fn=None):
         """
-        Integrates divergence along the trajectory.
+        Integrates the divergence along the trajectory with the trapezoid rule on the
+        trajectory grid (second order in the step size; n_steps + 1 divergence evaluations).
+        Returns -int div v dt, the change in log-density along the path.
         """
         dt = ts[1] - ts[0]
         
@@ -94,9 +96,10 @@ class Flow(eqx.Module):
         def _body(n, acc_p_t):
             x_n = jax.tree_util.tree_map(lambda a: a[n], xts)   # array or PyTree state
             div = div_fn(x_n, ts[n], step_idx=n)
-            return acc_p_t + dt * div
+            weight = jnp.where((n == 0) | (n == self.n_steps), 0.5, 1.0)
+            return acc_p_t + weight * dt * div
         
-        acc_p_t = lax.fori_loop(0, self.n_steps, _body, 0.0)
+        acc_p_t = lax.fori_loop(0, self.n_steps + 1, _body, 0.0)
         return -acc_p_t
 
     def push_forward_log_prob(self, logp_x_0, x_0, key=None):

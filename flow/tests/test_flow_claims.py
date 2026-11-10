@@ -112,25 +112,25 @@ def test_push_forward_log_prob_matches_change_of_variables():
     divergence f(t) = sum cos(x(t)) varying along the path (with a linear field any quadrature
     of the constant divergence is exact, which hides grid errors).
 
-    The divergence is accumulated with a LEFT Riemann sum on the trajectory grid, so the
-    log-density carries the known first-order error (f(1) - f(0)) / (2n) even though the
-    state is integrated with RK4. We check the result against truth + that leading term to
-    1e-4: this pins the grid (a right-endpoint or shifted grid flips/changes the term) and the
-    sign of the divergence. Backward: the reversed grid evaluates the other endpoints, so the
-    round trip log p0 -> log p1 -> log p0 is off by (f(1) - f(0)) / n."""
-    n = 400
-    flow = Flow(Fn(lambda x, t: jnp.sin(x)), n_steps=n, integrator_name="rk4")
+    The divergence integral uses the trapezoid rule on the trajectory grid and the state is
+    integrated with RK4, so the log-density error is second order: halving the step divides
+    it by ~4 (a left/right Riemann sum would only halve it), and the round trip
+    log p0 -> log p1 -> log p0 closes to the same order. Also pins the sign of the divergence."""
     x0 = jnp.array([0.4, -1.3, 2.0])
     logp0 = jnp.array(-1.7)
-    logp1, x1 = flow.push_forward_log_prob(logp0, x0)
-    assert jnp.allclose(x1, _sin_flow_map(x0), atol=1e-5)
-    lead = (jnp.sum(jnp.cos(x1)) - jnp.sum(jnp.cos(x0))) / (2 * n)
     truth = logp0 - _analytic_logdet(x0)
-    assert abs(lead) > 1e-3                       # the fixture makes the term visible
-    assert jnp.allclose(logp1, truth + lead, atol=1e-4), (logp1 - truth, lead)
-    logp0_back, x0_back = flow.push_backward_log_prob(logp1, x1)
-    assert jnp.allclose(x0_back, x0, atol=1e-5)
-    assert jnp.allclose(logp0_back, logp0 + 2 * lead, atol=1e-4), (logp0_back - logp0, 2 * lead)
+    errs = []
+    for n in (25, 50, 100):
+        flow = Flow(Fn(lambda x, t: jnp.sin(x)), n_steps=n, integrator_name="rk4")
+        logp1, x1 = flow.push_forward_log_prob(logp0, x0)
+        assert jnp.allclose(x1, _sin_flow_map(x0), atol=1e-5)
+        errs.append(float(abs(logp1 - truth)))
+        logp0_back, x0_back = flow.push_backward_log_prob(logp1, x1)
+        assert jnp.allclose(x0_back, x0, atol=1e-5)
+        assert abs(float(logp0_back - logp0)) < 2e-3 / n ** 2 * 100, (n, logp0_back - logp0)
+    assert errs[-1] < 1e-4, errs
+    for coarse, fine in zip(errs, errs[1:]):
+        assert 3.0 < coarse / fine < 5.0, errs                    # second order
 
 
 def test_push_forward_log_prob_pytree_state():

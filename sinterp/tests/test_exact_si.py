@@ -117,6 +117,31 @@ def test_gmm_velocity_matches_conditional_expectation_by_monte_carlo():
         assert abs(jnp.mean(r)) < 5 * jnp.std(r) / jnp.sqrt(n)
 
 
+def test_gmm_fields_stay_finite_far_from_every_component():
+    """b and s weight the components by their posterior responsibilities. Computed as ratios
+    of raw densities these underflow to 0/0 = nan in float32 a few dozen standard deviations
+    from every component; computed from log-densities they stay finite, and far out the
+    score tends to the dominant component's -C^{-1}(z - m). Catches a regression to the
+    raw-density ratio."""
+    p, b, s = si_gmm()
+    for z in [jnp.array([40.0, -35.0]), jnp.array([-60.0, 10.0])]:
+        for t in (0.2, 0.8):
+            bz, sz = b(z, t), s(z, t)
+            assert jnp.all(jnp.isfinite(bz)) and jnp.all(jnp.isfinite(sz)), (z, t, bz, sz)
+            # agrees with autodiff of the log of the (log-space) mixture density
+            logp = lambda x: jax.scipy.special.logsumexp(jnp.array(
+                [jnp.log(w0 * w1) + mvn.logpdf(x, *_component(t, i, j))
+                 for i, w0 in enumerate(W0) for j, w1 in enumerate(W1)]))
+            assert jnp.allclose(sz, jax.grad(logp)(z), rtol=1e-3, atol=1e-3)
+
+
+def _component(t, i, j):
+    interp = TrigonometricVPStochastic(sigma=0.5)
+    m = interp(M0S[i], M1S[j], jnp.zeros(2), t)
+    c = interp.alpha(t) ** 2 * C0S[i] + interp.beta(t) ** 2 * C1S[j] + interp.gamma(t) ** 2 * jnp.eye(2)
+    return m, c
+
+
 def test_gaussian_module_equals_gmm_module_for_deterministic_interpolant():
     """exact_si_gaussian (single Gaussian, gamma = 0) agrees with exact_si_gmm with one mode."""
     key = random.PRNGKey(0)

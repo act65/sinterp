@@ -84,6 +84,11 @@ class DiffraxIntegrator(Integrator):
         # self.solver = solver if solver is not None else diffrax.Kvaerno5()
         self.stepsize_controller = stepsize_controller if stepsize_controller is not None else diffrax.PIDController(rtol=1e-5, atol=1e-5)
 
+    @property
+    def _solve_kwargs(self):
+        """Extra diffeqsolve options; dt0 is passed explicitly, so it is not repeated here."""
+        return {k: v for k, v in self.kwargs.items() if k != 'dt0'}
+
     def solve(self, x_0, t0, t1, n_steps, key, *args):        
         # Diffrax expects (t, y, args)
         def diffrax_ode(t, y, args_):
@@ -102,7 +107,7 @@ class DiffraxIntegrator(Integrator):
             args=args,
             stepsize_controller=self.stepsize_controller,
             saveat=diffrax.SaveAt(t1=True),
-            **self.kwargs
+            **self._solve_kwargs
         )
         return jax.tree_util.tree_map(lambda y: y[-1], sol.ys)
 
@@ -118,7 +123,7 @@ class DiffraxIntegrator(Integrator):
         sol = diffrax.diffeqsolve(
             term, self.solver, t0, t1, dt0=dt0, y0=x_0, args=args,
             stepsize_controller=self.stepsize_controller,
-            saveat=diffrax.SaveAt(t1=True), **self.kwargs
+            saveat=diffrax.SaveAt(t1=True), **self._solve_kwargs
         )
         y1 = jax.tree_util.tree_map(lambda y: y[-1], sol.ys)
         stats = {k: v for k, v in sol.stats.items() if 'step' in k}
@@ -143,7 +148,7 @@ class DiffraxIntegrator(Integrator):
             args=args,
             stepsize_controller=self.stepsize_controller,
             saveat=diffrax.SaveAt(ts=ts),
-            **self.kwargs
+            **self._solve_kwargs
         )
         return sol.ys
 

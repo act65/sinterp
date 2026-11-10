@@ -101,3 +101,19 @@ if __name__ == "__main__":
     test_diffrax_adaptive()
     test_diffrax_trajectory()
     test_diffrax_log_prob()
+
+
+def test_user_dt0_is_used_not_passed_twice():
+    """A dt0 given to the integrator sets the initial step and is not also forwarded through
+    **kwargs (diffeqsolve would raise 'got multiple values for keyword argument dt0').
+    With a constant step controller, dt0 = 0.5 means 2 Dopri5 steps on dx/dt = -x: the
+    endpoint is the 2-step solution, distinct from the 100-step one."""
+    from flow.integrators import DiffraxIntegrator
+    ode = lambda x, t: -x
+    x0 = jnp.array([1.0, -2.0])
+    const = diffrax.ConstantStepSize()
+    coarse = DiffraxIntegrator(ode, stepsize_controller=const, dt0=0.5).solve(x0, 0.0, 1.0, 100, None)
+    fine = DiffraxIntegrator(ode, stepsize_controller=const).solve(x0, 0.0, 1.0, 100, None)
+    assert jnp.allclose(fine, x0 * jnp.exp(-1.0), atol=1e-6)
+    assert jnp.allclose(coarse, x0 * jnp.exp(-1.0), atol=1e-3)
+    assert not jnp.allclose(coarse, fine, atol=1e-9)
