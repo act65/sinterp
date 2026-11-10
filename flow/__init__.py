@@ -19,7 +19,7 @@ from flow.integrators import (
 )
 from flow.utils import divergence_jvp, divergence_hutchinson
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Flow",

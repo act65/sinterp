@@ -55,18 +55,7 @@ def sample_data(key):
 
 # --- Tests for TwoSidedField ---
 
-@pytest.mark.parametrize("interpolator_class", [LinearDeterministic, LinearStochastic, TrigonometricVPStochastic])
-@pytest.mark.parametrize("x_t_key", ["x_t", "x_t_dict"])
-def test_twosided_get_learned_components(sample_data, interpolator_class, x_t_key):
-    interpolator = interpolator_class()
-    field = TwoSidedField_v_etaz(interpolator, sample_data["v_model"], sample_data["eta_z_model"])
-    
-    x_t, t = sample_data[x_t_key], sample_data["t"]
-    v_val = field.get_velocity_v(x_t, t)
-    expected_v = sample_data["v_model"](x_t, t)
-    assert jax.tree_util.tree_all(jax.tree_util.tree_map(jnp.allclose, v_val, expected_v))
-
-@pytest.mark.parametrize("interpolator_class", [LinearDeterministic])
+@pytest.mark.parametrize("interpolator_class", [LinearDeterministic, TrigonometricVPStochastic])
 @pytest.mark.parametrize("x_t_key", ["x_t", "x_t_dict"])
 def test_twosided_derived_quantities(sample_data, interpolator_class, x_t_key):
     interpolator = interpolator_class()
@@ -151,36 +140,40 @@ def test_onesided_derived_quantities(sample_data, interpolator_class, x_t_key):
         expected_s = jax.tree_util.tree_map(lambda _ez: -_ez / gamma_t, eta_z_val)
         assert jax.tree_util.tree_all(jax.tree_util.tree_map(jnp.allclose, s_val, expected_s))
 
-@pytest.mark.parametrize("interpolator_class", [LinearDeterministic])
-@pytest.mark.parametrize("x_t_key", ["x_t", "x_t_dict"])
-def test_loss_methods(sample_data, interpolator_class, x_t_key):
-    interpolator = interpolator_class()
-    field = TwoSidedField_v_etaz(interpolator, sample_data["v_model"], sample_data["eta_z_model"])
-    
-    x_t, t = sample_data[x_t_key], sample_data["t"]
-    x = jax.tree_util.tree_map(jnp.ones_like, x_t)
-    y = jax.tree_util.tree_map(lambda val: val * 2, x)
-    e = jax.tree_util.tree_map(lambda val: jax.random.normal(jax.random.PRNGKey(1), shape=val.shape), x_t)
+@pytest.mark.parametrize("loss_name", ["loss_b", "loss_v", "loss_eta0", "loss_eta1", "loss_etaz"])
+def test_pytree_loss_is_sum_of_leaf_losses(sample_data, loss_name):
+    """For dict states each loss is the sum over leaves of the per-leaf loss (tree_reduce),
+    so a structured field weighs every block. Catches reducing only the first leaf or
+    averaging the leaves together. (Correctness of the loss *targets* is checked in
+    test_sfield_oracle.py.)"""
+    field = TwoSidedField_v_etaz(TrigonometricVPStochastic(), sample_data["v_model"], sample_data["eta_z_model"])
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(1), 3)
+    shapes = {"a": (4,), "b": (2,)}
+    x = {n: jax.random.normal(jax.random.fold_in(k1, i), s) for i, (n, s) in enumerate(shapes.items())}
+    y = {n: jax.random.normal(jax.random.fold_in(k2, i), s) + 2.0 for i, (n, s) in enumerate(shapes.items())}
+    e = {n: jax.random.normal(jax.random.fold_in(k3, i), s) for i, (n, s) in enumerate(shapes.items())}
+    t = 0.3
+    total = getattr(field, loss_name)(x, y, e, t)
+    per_leaf = sum(getattr(field, loss_name)(x[n], y[n], e[n], t) for n in shapes)
+    assert total.shape == ()
+    assert jnp.allclose(total, per_leaf, rtol=1e-5)
 
-    assert field.loss_b(x, y, e, t).shape == ()
-    assert field.loss_v(x, y, e, t).shape == ()
-    assert field.loss_s(x, y, e, t).shape == ()
-    assert field.loss_eta0(x, y, e, t).shape == ()
-    assert field.loss_eta1(x, y, e, t).shape == ()
-    assert field.loss_etaz(x, y, e, t).shape == ()
 
-@pytest.mark.parametrize("interpolator_class", [LinearDeterministic])
-@pytest.mark.parametrize("x_t_key", ["x_t", "x_t_dict"])
-def test_total_loss(sample_data, interpolator_class, x_t_key):
-    interpolator = interpolator_class()
-    
-    field_v_etaz = TwoSidedField_v_etaz(interpolator, sample_data["v_model"], sample_data["eta_z_model"])
-    field_b = OneSidedField_b(interpolator, sample_data["b_model"])
-    
-    x_t, t = sample_data[x_t_key], sample_data["t"]
-    x = jax.tree_util.tree_map(jnp.ones_like, x_t)
-    y = jax.tree_util.tree_map(lambda val: val * 2, x)
-    e = jax.tree_util.tree_map(lambda val: jax.random.normal(jax.random.PRNGKey(1), shape=val.shape), x_t)
-    
-    assert field_v_etaz.total_loss(x, y, e, t).shape == ()
-    assert field_b.total_loss(x, y, e, t).shape == ()
+def test_total_loss_is_sum_of_the_two_component_losses(sample_data):
+    """Each field's total_loss is the sum of the losses of the two quantities it learns."""
+    from sinterp.stochasticfield import TwoSidedField_b_s, TwoSidedField_x0_x1, TwoSidedField_b_eta1
+    interp = TrigonometricVPStochastic()
+    m1, m2 = sample_data["v_model"], sample_data["eta_z_model"]
+    x, y, e = (jax.random.normal(jax.random.PRNGKey(i), (4,)) for i in range(3))
+    t = 0.3
+    cases = [
+        (TwoSidedField_v_etaz(interp, m1, m2), ("loss_v", "loss_etaz")),
+        (TwoSidedField_b_s(interp, m1, m2), ("loss_b", "loss_s")),
+        (TwoSidedField_x0_x1(interp, m1, m2), ("loss_eta0", "loss_eta1")),
+        (TwoSidedField_b_eta1(interp, m1, m2), ("loss_b", "loss_eta1")),
+        (OneSidedField_b(OneSidedLinear(), m1), ("loss_b",)),
+        (OneSidedField_eta1(OneSidedLinear(), m1), ("loss_eta1",)),
+    ]
+    for field, names in cases:
+        want = sum(getattr(field, n)(x, y, e, t) for n in names)
+        assert jnp.allclose(field.total_loss(x, y, e, t), want), type(field).__name__

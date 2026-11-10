@@ -92,7 +92,8 @@ class Flow(eqx.Module):
             div_fn = lambda x, t, step_idx=None: exact_div(x, t)
 
         def _body(n, acc_p_t):
-            div = div_fn(xts[n], ts[n], step_idx=n)
+            x_n = jax.tree_util.tree_map(lambda a: a[n], xts)   # array or PyTree state
+            div = div_fn(x_n, ts[n], step_idx=n)
             return acc_p_t + dt * div
         
         acc_p_t = lax.fori_loop(0, self.n_steps, _body, 0.0)
@@ -113,7 +114,7 @@ class Flow(eqx.Module):
             div_fn = lambda x, t, step_idx: hutch_div(x, t, key=key, step_idx=step_idx)
 
         acc = self.accumulate(xts, ts, div_fn=div_fn)
-        return acc + logp_x_0, xts[-1]
+        return acc + logp_x_0, jax.tree_util.tree_map(lambda a: a[-1], xts)
     
     def push_backward_log_prob(self, logp_x_1, x_1, key=None):
         xts = self.backward_trajectory(x_1)
@@ -125,7 +126,7 @@ class Flow(eqx.Module):
             div_fn = lambda x, t, step_idx: hutch_div(x, t, key=key, step_idx=step_idx)
 
         acc = self.accumulate(xts, ts, div_fn=div_fn)
-        return acc + logp_x_1, xts[-1]
+        return acc + logp_x_1, jax.tree_util.tree_map(lambda a: a[-1], xts)
     
     def push_forward(self, p_x_0, x_0):
         # Convenience method (work in log space then exp)

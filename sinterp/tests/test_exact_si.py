@@ -1,153 +1,175 @@
+"""Exact reference fields (sinterp.exact_si_gmm, exact_si_gaussian, exact_ot_gmm).
 
+These modules are the oracles other tests and experiments trust, so they are checked
+against derivations made another way:
+  * endpoints: p(., 0) / p(., 1) equal the source / target mixtures;
+  * normalisation: p(., t) integrates to 1 (2-D quadrature);
+  * score: s = grad_x log p (autodiff);
+  * velocity: the continuity equation dp/dt + div(p b) = 0 (autodiff in x and t), plus a
+    Monte Carlo check that b is the conditional expectation E[dI/dt | x_t].
+
+Fixture: 2-D, 2 source x 3 target components with unequal weights, non-zero means and
+correlated, non-commuting covariances, under a smooth *stochastic* interpolant
+(TrigonometricVPStochastic, gamma > 0 inside (0, 1)). Unequal n != m and unequal weights
+catch a transposed weight matrix; gamma > 0 catches a dropped noise-covariance term.
+"""
+import jax
 import jax.numpy as jnp
-from jax import random
+import numpy as np
 import pytest
-from sinterp import exact_si_gmm, exact_si_gaussian
-from sinterp.interpolants import LinearDeterministic, LinearStochastic
+from jax import random
+from jax.scipy.stats import multivariate_normal as mvn
 
-@pytest.fixture
-def key():
-    return random.PRNGKey(0)
+from sinterp import exact_si_gmm, exact_si_gaussian, exact_ot_gmm
+from sinterp.interpolants import LinearDeterministic, TrigonometricVPStochastic
 
-def test_g_v_gmm_consistency(key):
-    """
-    Check that the exact gaussian SI gives results equal to exact GMM with 1 mode.
-    """
-    m1 = jnp.array([0.0])
-    m2 = jnp.array([0.5])
-    c1 = jnp.array([[1.0]])
-    c2 = jnp.array([[0.5]])
-    w1 = jnp.array([1.0])
-    w2 = jnp.array([1.0])
+M0S = [jnp.array([-1.0, 0.5]), jnp.array([1.5, -0.5])]
+C0S = [jnp.array([[1.0, 0.3], [0.3, 0.5]]), jnp.array([[0.4, -0.1], [-0.1, 0.8]])]
+W0 = jnp.array([0.3, 0.7])
+M1S = [jnp.array([2.0, 1.0]), jnp.array([-2.0, 0.0]), jnp.array([0.0, -2.5])]
+C1S = [jnp.array([[0.2, 0.05], [0.05, 0.3]]), jnp.array([[0.5, 0.0], [0.0, 0.1]]),
+       jnp.array([[0.3, -0.2], [-0.2, 0.6]])]
+W1 = jnp.array([0.2, 0.5, 0.3])
 
+ZS = [jnp.array([0.3, -0.4]), jnp.array([-1.2, 0.8]), jnp.array([1.7, 0.2])]
+TS = [0.2, 0.5, 0.83]
+
+
+def mixture(z, ms, cs, ws):
+    return sum(w * mvn.pdf(z, m, c) for w, m, c in zip(ws, ms, cs))
+
+
+def si_gmm():
+    return exact_si_gmm.construct_p_b_s(TrigonometricVPStochastic(sigma=0.5), M0S, M1S, C0S, C1S, W0, W1)
+
+
+def ot_gmm():
+    return exact_ot_gmm.construct_optimal_transport(
+        jnp.stack(M0S), jnp.stack(M1S), jnp.stack(C0S), jnp.stack(C1S), W0, W1)
+
+
+BUILDERS = {"si_gmm": si_gmm, "ot_gmm": ot_gmm}
+
+
+@pytest.mark.parametrize("which", list(BUILDERS))
+def test_endpoints_are_source_and_target_mixtures(which):
+    p, _, _ = BUILDERS[which]()
+    for z in ZS:
+        # ot_gmm adds a 1e-6 Cholesky jitter and its Sinkhorn marginals hold to ~1e-6
+        assert jnp.allclose(p(z, 0.0), mixture(z, M0S, C0S, W0), rtol=1e-4, atol=1e-7)
+        assert jnp.allclose(p(z, 1.0), mixture(z, M1S, C1S, W1), rtol=1e-4, atol=1e-7)
+
+
+@pytest.mark.parametrize("which", list(BUILDERS))
+@pytest.mark.parametrize("t", [0.37, 0.8])
+def test_density_integrates_to_one(which, t):
+    p, _, _ = BUILDERS[which]()
+    g = jnp.linspace(-8.0, 8.0, 241)
+    Z = jnp.stack(jnp.meshgrid(g, g), -1).reshape(-1, 2)
+    mass = jnp.sum(jax.jit(jax.vmap(lambda z: p(z, t)))(Z)) * (g[1] - g[0]) ** 2
+    assert abs(float(mass) - 1.0) < 1e-3
+
+
+@pytest.mark.parametrize("which", list(BUILDERS))
+@pytest.mark.parametrize("t", TS)
+def test_score_is_grad_log_density(which, t):
+    p, _, s = BUILDERS[which]()
+    for z in ZS:
+        want = jax.grad(lambda z: jnp.log(p(z, t)))(z)
+        assert jnp.allclose(s(z, t), want, rtol=1e-3, atol=1e-4), (z, s(z, t), want)
+
+
+@pytest.mark.parametrize("which", list(BUILDERS))
+@pytest.mark.parametrize("t", TS)
+def test_velocity_satisfies_continuity_equation(which, t):
+    """dp/dt + div(p b) = 0. Catches a wrong b (missing factor 1/2 on dC, wrong component
+    weights, sign error) that would leave p and s correct. Tolerance is relative to the size
+    of the two terms."""
+    p, b, _ = BUILDERS[which]()
+    terms = jax.jit(lambda z: (jax.grad(p, argnums=1)(z, t),
+                               jnp.trace(jax.jacfwd(lambda z: p(z, t) * b(z, t))(z))))
+    for z in ZS:
+        dpdt, div = terms(z)
+        scale = jnp.abs(dpdt) + jnp.abs(div)
+        assert jnp.abs(dpdt + div) <= 2e-3 * scale + 1e-7, (z, dpdt, div)
+
+
+def test_gmm_velocity_matches_conditional_expectation_by_monte_carlo():
+    """b(x, t) = E[dI/dt | x_t = x] (the target of the flow-matching loss). Continuity fixes b
+    only up to p-weighted divergence-free fields, so check the regression directly:
+    E[(dI/dt - b(x_t)) h(x_t)] = 0 for several test functions h, within 5 Monte Carlo s.e.
+    (1-D, bimodal source, so the mixture posterior weights matter)."""
+    interp = TrigonometricVPStochastic(sigma=0.5)
+    m0s, c0s, w0 = [jnp.array([-1.0]), jnp.array([2.0])], [jnp.array([[0.3]]), jnp.array([[0.5]])], jnp.array([0.4, 0.6])
+    m1s, c1s, w1 = [jnp.array([1.0])], [jnp.array([[0.2]])], jnp.array([1.0])
+    _, b, _ = exact_si_gmm.construct_p_b_s(interp, m0s, m1s, c0s, c1s, w0, w1)
+    n, t = 40000, 0.4
+    k = random.split(random.PRNGKey(0), 4)
+    comp = random.bernoulli(k[0], 0.6, (n,)).astype(int)
+    x0 = jnp.array([-1.0, 2.0])[comp] + jnp.sqrt(jnp.array([0.3, 0.5]))[comp] * random.normal(k[1], (n,))
+    x1 = 1.0 + jnp.sqrt(0.2) * random.normal(k[2], (n,))
+    z = random.normal(k[3], (n,))
+    xt = interp(x0, x1, z, t)
+    dI = (interp.dalphadt(t) * x0 + interp.dbetadt(t) * x1 + interp.dgammadt(t) * z)
+    resid = dI - jax.jit(jax.vmap(lambda x: b(x[None], t)[0]))(xt)
+    for h in (jnp.ones_like, lambda x: x, jnp.tanh, lambda x: x**2):
+        r = resid * h(xt)
+        assert abs(jnp.mean(r)) < 5 * jnp.std(r) / jnp.sqrt(n)
+
+
+def test_gaussian_module_equals_gmm_module_for_deterministic_interpolant():
+    """exact_si_gaussian (single Gaussian, gamma = 0) agrees with exact_si_gmm with one mode."""
+    key = random.PRNGKey(0)
+    m1, m2 = jnp.array([0.0, 1.0]), jnp.array([0.5, -1.0])
+    c1, c2 = C0S[0], C1S[2]
     interp = LinearDeterministic()
-
     p0, v0, s0 = exact_si_gaussian.construct_p_b_s(m1, m2, c1, c2, interp)
-    p1, v1, s1 = exact_si_gmm.construct_p_b_s(interp, [m1], [m2], [c1], [c2], w1, w2)
-
+    p1, v1, s1 = exact_si_gmm.construct_p_b_s(interp, [m1], [m2], [c1], [c2], jnp.ones(1), jnp.ones(1))
     for _ in range(10):
-        key, subkey = random.split(key)
-        z = random.uniform(subkey, shape=m1.shape) * 10 - 5
-        key, subkey = random.split(key)
-        t = random.uniform(subkey, ())
+        key, k1, k2 = random.split(key, 3)
+        z = random.uniform(k1, (2,)) * 6 - 3
+        t = random.uniform(k2, ())
+        assert jnp.isclose(p0(z, t), p1(z, t), rtol=1e-4)
+        assert jnp.allclose(v0(z, t), v1(z, t), rtol=1e-4, atol=1e-5)
+        assert jnp.allclose(s0(z, t), s1(z, t), rtol=1e-4, atol=1e-5)
 
-        assert jnp.isclose(p0(z, t), p1(z, t), atol=1e-5)
-        assert jnp.allclose(v0(z, t), v1(z, t), atol=1e-5)
-        assert jnp.allclose(s0(z, t), s1(z, t), atol=1e-5)
 
-def test_boundary_conditions(key):
-    """
-    Check that at t=0 we recover source distribution and at t=1 we recover target.
-    """
-    m1s = [jnp.array([0.0])]
-    c1s = [jnp.array([[1.0]])]
-    w1s = jnp.array([1.0])
-    
-    m2s = [jnp.array([-2.0]), jnp.array([2.0])]
-    c2s = [jnp.array([[0.25]]), jnp.array([[0.25]])]
-    w2s = jnp.array([0.5, 0.5])
-    
-    interp = LinearDeterministic()
-    p, v, s = exact_si_gmm.construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s)
-    
-    # Check t=0
-    z = jnp.array([0.0])
-    # Source is N(0, 1). pdf(0) = 1/sqrt(2pi) approx 0.3989
-    expected_p0 = 0.39894228
-    assert jnp.isclose(p(z, 0.0), expected_p0, atol=1e-4)
-    
-    # Check t=1
-    # Target is 0.5*N(-2, 0.25) + 0.5*N(2, 0.25)
-    # At z=2, contribution from N(2, 0.25) dominates.
-    # N(2; 2, 0.25) = 1/sqrt(2pi*0.25) = 1/sqrt(pi/2) = sqrt(2/pi) approx 0.7978
-    # Weighted by 0.5 -> 0.3989
-    # Contribution from N(-2, 0.25) at z=2 is negligible (4 sigmas away)
-    expected_p1 = 0.39894228
-    assert jnp.isclose(p(jnp.array([2.0]), 1.0), expected_p1, atol=1e-4)
+def test_gaussian_module_handles_stochastic_interpolant():
+    interp = TrigonometricVPStochastic(sigma=0.5)
+    pg, vg, sg = exact_si_gaussian.construct_p_b_s(M0S[0], M1S[0], C0S[0], C1S[0], interp)
+    p1, b1, s1 = exact_si_gmm.construct_p_b_s(interp, M0S[:1], M1S[:1], C0S[:1], C1S[:1], jnp.ones(1), jnp.ones(1))
+    z, t = ZS[0], 0.4
+    assert jnp.isclose(pg(z, t), p1(z, t), rtol=1e-4)
+    assert jnp.allclose(vg(z, t), b1(z, t), rtol=1e-4)
 
-def test_stochastic_interpolant(key):
-    """
-    Check that stochastic interpolant runs without error and produces valid output.
-    """
-    m1s = [jnp.array([0.0])]
-    c1s = [jnp.array([[1.0]])]
-    w1s = jnp.array([1.0])
-    
-    m2s = [jnp.array([2.0])]
-    c2s = [jnp.array([[1.0]])]
-    w2s = jnp.array([1.0])
-    
-    # Use LinearStochastic which has non-zero gamma
-    interp = LinearStochastic()
-    # Pass explicit noise covariance (identity)
-    ce = jnp.eye(1)
-    p, v, s = exact_si_gmm.construct_p_b_s(interp, m1s, m2s, c1s, c2s, w1s, w2s, ce=ce)
-    
-    z = jnp.array([1.0])
-    t = 0.5
-    
-    val_p = p(z, t)
-    val_v = v(z, t)
-    val_s = s(z, t)
-    
-    assert not jnp.isnan(val_p)
-    assert not jnp.isnan(val_v).any()
-    assert not jnp.isnan(val_s).any()
-    
-    # Check that gamma is actually being used (indirectly, by checking if results differ from deterministic if we forced gamma=0)
-    # But here we just want to ensure it runs.
 
-def test_stochastic_vs_deterministic(key):
-    """
-    Verify that a stochastic interpolant produces different results (e.g. higher variance/lower peak density)
-    than a deterministic one, confirming that gamma is being used.
-    """
-    m1s = [jnp.array([0.0])]
-    c1s = [jnp.array([[1.0]])]
-    w1s = jnp.array([1.0])
-    
-    m2s = [jnp.array([0.0])] # Same mean to isolate variance effects
-    c2s = [jnp.array([[1.0]])]
-    w2s = jnp.array([1.0])
-    
-    # Deterministic: LinearDeterministic (gamma=0)
-    # Path should be constant N(0, 1) if alpha(t)=1-t, beta(t)=t, gamma=0
-    # Wait, LinearDeterministic: alpha=1-t, beta=t. 
-    # c_t = (1-t)^2 + t^2. At t=0.5, c_t = 0.25 + 0.25 = 0.5. 
-    # So it contracts and expands. It's not constant variance.
-    interp_det = LinearDeterministic()
-    p_det, _, _ = exact_si_gmm.construct_p_b_s(interp_det, m1s, m2s, c1s, c2s, w1s, w2s)
-    
-    # Stochastic: LinearStochastic
-    # alpha, beta, gamma are different.
-    # But let's check if the density value at the mean (z=0) is different.
-    interp_stoch = LinearStochastic()
-    # Need to pass ce for stochastic
-    ce = jnp.eye(1)
-    p_stoch, _, _ = exact_si_gmm.construct_p_b_s(interp_stoch, m1s, m2s, c1s, c2s, w1s, w2s, ce=ce)
-    
-    z = jnp.array([0.0])
-    t = 0.5
-    
-    val_det = p_det(z, t)
-    val_stoch = p_stoch(z, t)
-    
-    # They should be different
-    assert not jnp.isclose(val_det, val_stoch, atol=1e-5)
-    
-    # Specifically, LinearStochastic at t=0.5:
-    # alpha=0, beta=0, gamma=1 (from code: gamma = 2t for t<0.5? No, let's check interpolants.py)
-    # LinearStochastic:
-    # t < 0.5: alpha=1-2t, beta=0, gamma=2t
-    # t=0.5: alpha=0, beta=0, gamma=1.
-    # So at t=0.5, x_t = gamma(t)*z ~ N(0, 1). Variance is 1.
-    #
-    # LinearDeterministic at t=0.5:
-    # alpha=0.5, beta=0.5, gamma=0.
-    # Variance = 0.5^2*1 + 0.5^2*1 = 0.25 + 0.25 = 0.5.
-    #
-    # So Stochastic variance (1.0) > Deterministic variance (0.5).
-    # Therefore, Stochastic peak density (at 0) should be LOWER than Deterministic peak density.
-    # pdf ~ 1/sqrt(var). 
-    
-    assert val_stoch < val_det
+def test_ot_gmm_coupling_has_mixture_weights_as_marginals():
+    pi = exact_ot_gmm.get_ott_coupling(jnp.stack(M0S), jnp.stack(M1S), jnp.stack(C0S), jnp.stack(C1S), W0, W1)
+    assert jnp.all(pi >= 0)
+    assert jnp.allclose(pi.sum(1), W0, atol=1e-5)
+    assert jnp.allclose(pi.sum(0), W1, atol=1e-5)
+
+
+def test_bures_wasserstein_cost_closed_forms():
+    """W2^2 between Gaussians with commuting (diagonal) covariances is
+    ||m0 - m1||^2 + sum_k (sd0_k - sd1_k)^2. Catches a missing factor 2 or an unsquared sqrtm."""
+    m0s, m1s = jnp.array([[0.0, 1.0]]), jnp.array([[2.0, -1.0], [0.5, 0.5]])
+    c0s = jnp.array([jnp.diag(jnp.array([4.0, 0.25]))])
+    c1s = jnp.array([jnp.diag(jnp.array([1.0, 1.0])), jnp.diag(jnp.array([9.0, 0.04]))])
+    C = exact_ot_gmm.compute_wasserstein_cost_matrix(m0s, m1s, c0s, c1s)
+    want = np.array([[4 + 4 + (2 - 1) ** 2 + (0.5 - 1) ** 2,
+                      0.25 + 0.25 + (2 - 3) ** 2 + (0.5 - 0.2) ** 2]])
+    assert np.allclose(np.asarray(C), want, rtol=1e-5)
+
+
+def test_ot_gmm_single_pair_is_the_gaussian_displacement_interpolation():
+    """For one source and one target Gaussian with non-commuting covariances, the path is
+    McCann's interpolation: at t = 1 it is exactly N(m1, C1) (so the map matrix A satisfies
+    A C0 A = C1), and its mean moves on the straight line (1 - t) m0 + t m1."""
+    p, _, _ = exact_ot_gmm.construct_optimal_transport(
+        jnp.stack(M0S[:1]), jnp.stack(M1S[2:]), jnp.stack(C0S[:1]), jnp.stack(C1S[2:]), jnp.ones(1), jnp.ones(1))
+    for z in ZS:
+        assert jnp.allclose(p(z, 1.0), mvn.pdf(z, M1S[2], C1S[2]), rtol=1e-4)
+    t = 0.3
+    mean_t = (1 - t) * M0S[0] + t * M1S[2]
+    assert jnp.allclose(jax.grad(lambda z: jnp.log(p(z, t)))(mean_t), 0.0, atol=1e-4)

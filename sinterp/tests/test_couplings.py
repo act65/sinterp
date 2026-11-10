@@ -1,3 +1,5 @@
+import itertools
+import numpy as np
 import pytest
 import jax.numpy as jnp
 import jax
@@ -59,8 +61,10 @@ class TestExactOTCoupling:
         coupling = ExactOTCoupling(epsilon=1e-2, n_iters=2000)
         _, x1_out, _, _, _ = coupling(k3, x0, x1)
         
-        # 1. Verify x1_out is a permutation of x1 (mass conservation)
-        assert jnp.allclose(jnp.sort(x1_out, axis=0), jnp.sort(x1, axis=0), atol=0.5)
+        # 1. Verify x1_out is (approximately) the sorted matching. The plan is entropic
+        # (eps=1e-2), so near-tied neighbours are blurred on the scale of their spacing;
+        # max observed error 0.15 on this batch, a wrong (e.g. reversed) matching is O(2).
+        assert jnp.allclose(x1_out[jnp.argsort(x0[:, 0])], jnp.sort(x1, axis=0), atol=0.2)
         
         # 2. Verify Monotonicity
         sort_idx = jnp.argsort(x0, axis=0).flatten()
@@ -225,7 +229,9 @@ class TestC2OTCoupling:
         out = jax.jit(lambda x, e: cp.couple_blocks(key, x, e, deps))(x, e)
         for n in x:
             cond = {p: x[p] for p in deps[n]} or None
-            _, ref, _, _, _ = cp(key, x[n], e[n], c0=cond)
+            # jitted reference: eager and jitted costs can differ in the last bit, which can
+            # flip an exactly tied Hungarian/adaptive-w decision (see test_hard_coupling_under_vmap)
+            ref = jax.jit(lambda xn, en, c: cp(key, xn, en, c0=c)[1])(x[n], e[n], cond)
             assert jnp.array_equal(out[n], ref), n
 
     def test_hard_coupling_under_vmap(self, key):
@@ -243,3 +249,107 @@ class TestC2OTCoupling:
         # jit can legitimately pick a different (equally optimal) pairing on CPU.
         for i in range(2):
             assert jnp.array_equal(out[i], jax.jit(f)(TH[i], E[i]))
+
+
+def _brute_force_assignment(cost):
+    n = cost.shape[0]
+    return np.array(min(itertools.permutations(range(n)),
+                        key=lambda p: cost[np.arange(n), list(p)].sum()))
+
+
+class TestCouplingClaims:
+    """Claims checked against independent references (brute force, ott, statistics)."""
+
+    def test_independent_coupling_keeps_x1_c1_extra_paired(self, key):
+        """x1, c1 and every extra arg are permuted by the *same* permutation; x0, c0 untouched.
+        Catches permuting c1/extra with a different key or forgetting to permute them."""
+        n = 50
+        x0 = jnp.arange(n, dtype=jnp.float32)[:, None]
+        x1 = 10.0 * x0 + 1.0
+        c0 = -x0
+        c1 = 100.0 * x0
+        x0o, x1o, c0o, c1o, ex = IndependentCoupling()(key, x0, x1, c0, c1, tag=x0 * 7.0)
+        idx = np.asarray((x1o[:, 0] - 1.0) / 10.0).round().astype(int)
+        assert sorted(idx) == list(range(n))                      # a permutation
+        assert jnp.array_equal(x0o, x0) and jnp.array_equal(c0o, c0)
+        assert jnp.allclose(c1o[:, 0], 100.0 * idx) and jnp.allclose(ex["tag"][:, 0], 7.0 * idx)
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_hard_ot_minimises_cost_vs_brute_force(self, seed):
+        """C2OT with w=0 is exact hard OT: its matching attains the brute-force minimum of
+        sum_i ||x0_i - x1_perm(i)||^2 over all 6! permutations (2-D, shifted target)."""
+        from sinterp.couplings import C2OTCoupling
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(seed), 3)
+        x0 = jax.random.normal(k1, (6, 2))
+        x1 = jax.random.normal(k2, (6, 2)) + jnp.array([1.0, 0.0])
+        _, x1o, _, _, _ = jax.jit(C2OTCoupling(w=0.0).__call__)(k3, x0, x1)
+        best = _brute_force_assignment(np.asarray(((x0[:, None] - x1[None]) ** 2).sum(-1)))
+        assert jnp.array_equal(x1o, x1[best])
+
+    @pytest.mark.parametrize("seed", [0, 2])
+    def test_exact_ot_coupling_approaches_brute_force(self, seed):
+        """ExactOTCoupling (Sinkhorn, eps=1e-2) returns the barycentric projection, which for
+        batches whose best and second-best assignments differ in cost by > 0.38 (seeds 0, 2)
+        is within 0.02 of the brute-force optimal assignment (entropic blur ~ exp(-gap/eps))."""
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(seed), 3)
+        x0 = jax.random.normal(k1, (6, 2))
+        x1 = jax.random.normal(k2, (6, 2)) + jnp.array([1.0, 0.0])
+        _, x1o, _, _, _ = ExactOTCoupling()(k3, x0, x1)
+        best = _brute_force_assignment(np.asarray(((x0[:, None] - x1[None]) ** 2).sum(-1)))
+        assert jnp.allclose(x1o, x1[best], atol=2e-2)
+
+    @pytest.mark.parametrize("w", [0.5, 3.0])
+    @pytest.mark.parametrize("seed", range(3))
+    def test_c2ot_fixed_w_minimises_combined_cost(self, w, seed):
+        """C2OT claim: the matching minimises ||x0_i - x1_j||^2 + w ||c_i - c_j||^2 exactly."""
+        from sinterp.couplings import C2OTCoupling
+        ks = jax.random.split(jax.random.PRNGKey(seed), 3)
+        x, e, c = (jax.random.normal(ks[0], (6, 2)), jax.random.normal(ks[1], (6, 2)),
+                   jax.random.normal(ks[2], (6, 1)))
+        cost = np.asarray(((x[:, None] - e[None]) ** 2).sum(-1) + w * ((c[:, None] - c[None]) ** 2).sum(-1))
+        perm, w_used = jax.jit(lambda x, e, c: C2OTCoupling(w=w).matching(x, e, c0=c))(x, e, c)
+        assert float(w_used) == pytest.approx(w)
+        assert np.array_equal(np.asarray(perm), _brute_force_assignment(cost))
+
+    def test_fixed_sinkhorn_matches_ott(self, key):
+        """SinkhornCoupling's default 'fixed' backend claims the same updates as ott's balanced
+        lse-mode solver, so with the iteration count pinned (ott min=max=100) the plans agree up
+        to float32 rounding (~1e-4 relative). Its row marginals are exactly uniform (f is
+        updated last). (Unpinned, ott may stop early at its 1e-3 threshold, so the default
+        SinkhornCoupling(backend='ott') differs at the 1e-3 level on some batches.)"""
+        from ott.geometry import pointcloud
+        from ott.problems.linear import linear_problem
+        from ott.solvers.linear import sinkhorn
+        k1, k2 = jax.random.split(key)
+        x0 = jax.random.normal(k1, (64, 2))
+        x1 = 0.5 * jax.random.normal(k2, (64, 2)) + 1.0
+        P = SinkhornCoupling._fixed_sinkhorn_plan(x0, x1, 0.1, 100)
+        assert jnp.allclose(P.sum(1), 1 / 64, rtol=1e-4)
+        ref = sinkhorn.Sinkhorn(min_iterations=100, max_iterations=100)(
+            linear_problem.LinearProblem(pointcloud.PointCloud(x0, x1, epsilon=0.1))).matrix
+        assert float(jnp.max(jnp.abs(P - ref)) / jnp.max(ref)) < 1e-3
+
+    def test_couple_blocks_root_is_hard_ot_and_child_noise_independent_of_parent(self):
+        """Per-block coupling claims: (i) a block with no conditions gets plain hard OT, i.e. in
+        1-D its noise is sorted against its values; (ii) a child's noise is (approximately)
+        independent of its parent: corr(e_child, x_parent) = 0 within 5 s.e. (se = 1/sqrt(2560)),
+        whereas joint hard OT makes it ~ rho; (iii) child and parent noise stay uncorrelated,
+        so the coupled noise vector is still ~ N(0, I)."""
+        from sinterp.couplings import C2OTCoupling
+        rho, n = 0.8, 128
+        cp = C2OTCoupling(target_ratio=0.01)
+        f = jax.jit(lambda k, x, e: cp.couple_blocks(k, x, e, {"a": [], "b": ["a"]}))
+        A, EA, EB = [], [], []
+        for k in jax.random.split(jax.random.PRNGKey(0), 20):
+            k1, k2, k3, k4 = jax.random.split(k, 4)
+            a = jax.random.normal(k1, (n, 1))
+            b = rho * a + np.sqrt(1 - rho**2) * jax.random.normal(k2, (n, 1))
+            e = {"a": jax.random.normal(k3, (n, 1)), "b": jax.random.normal(k4, (n, 1))}
+            out = f(k, {"a": a, "b": b}, e)
+            assert jnp.array_equal(out["a"][jnp.argsort(a[:, 0])], jnp.sort(e["a"], axis=0))   # (i)
+            assert jnp.array_equal(jnp.sort(out["b"], axis=0), jnp.sort(e["b"], axis=0))
+            A.append(a); EA.append(out["a"]); EB.append(out["b"])
+        A, EA, EB = (np.asarray(jnp.concatenate(v)).ravel() for v in (A, EA, EB))
+        se = 1 / np.sqrt(A.size)
+        assert abs(np.corrcoef(EB, A)[0, 1]) < 5 * se                                          # (ii)
+        assert abs(np.corrcoef(EB, EA)[0, 1]) < 5 * se                                         # (iii)

@@ -68,8 +68,11 @@ class StochasticField(eqx.Module):
         return jax.tree_util.tree_reduce(lambda x, y: x + y, losses)
 
     def loss_s(self, x, y, e, t, *args):
-        """Score matching loss."""
-        i = self.interpolator.deterministic(x, y, t)
+        """Denoising score-matching loss 0.5|s(x_t)|^2 + s(x_t).z / gamma(t), with
+        x_t = interpolator(x, y, e, t) and z = e; its minimiser is s = -E[z | x_t] / gamma,
+        the score of x_t. Returns 0 where |gamma| <= 1e-5 (no noise, no score to learn).
+        """
+        i = self.interpolator(x, y, e, t)
         st = self.get_score_s(i, t, *args)
         gamma = self.interpolator.gamma(t)
         
@@ -78,7 +81,7 @@ class StochasticField(eqx.Module):
         def _compute_loss(_st, _x):
             return 0.5 * jnp.linalg.norm(_st)**2 + (1/safe_gamma) * ((_st * _x).sum())
             
-        losses = jax.tree_util.tree_map(_compute_loss, st, x)
+        losses = jax.tree_util.tree_map(_compute_loss, st, e)
         loss = jax.tree_util.tree_reduce(lambda x, y: x + y, losses)
         
         return jnp.where(jnp.abs(gamma) > 1e-5, loss, 0.0)
@@ -115,7 +118,14 @@ class StochasticField(eqx.Module):
 
 
 class TwoSidedField(StochasticField):
-    """Base class for all Two-Sided Stochastic Interpolants."""
+    """Base class for two-sided interpolants x_t = alpha(t) x0 + beta(t) x1 + gamma(t) z.
+
+    Every subclass learns two quantities and derives the others from
+    x_t = alpha eta0 + beta eta1 + gamma etaz,  v = alpha' eta0 + beta' eta1,
+    b = v + gamma' etaz,  s = -etaz / gamma.
+    Derived values are set to 0 where the linear system they need is singular
+    (|det| <= 1e-9) or where they divide by gamma and |gamma| <= 1e-5.
+    """
 
     def _solve_for_data_denoisers(self, v_val, eta_z_val, x_t, t):
         """
@@ -168,6 +178,12 @@ class TwoSidedField(StochasticField):
 
 
 class TwoSidedField_v_etaz(TwoSidedField):
+    """Learns v (model_v) and etaz (model_etaz); loss_v + loss_etaz.
+
+    b = v + gamma' etaz, s = -etaz / gamma; eta0, eta1 from the 2x2 system
+    [alpha beta; alpha' beta'] (eta0, eta1) = (x_t - gamma etaz, v), which is
+    singular (both returned as 0) when alpha' beta - beta' alpha = 0.
+    """
     # These contain the trainable weights
     model_v: eqx.Module
     model_etaz: eqx.Module
@@ -217,6 +233,10 @@ class TwoSidedField_v_etaz(TwoSidedField):
 
 
 class TwoSidedField_b_s(TwoSidedField):
+    """Learns b (model_b) and s (model_s); loss_b + loss_s.
+
+    etaz = -gamma s, v = b + gamma gamma' s; eta0, eta1 as in TwoSidedField_v_etaz.
+    """
     model_b: eqx.Module
     model_s: eqx.Module
 
@@ -259,6 +279,11 @@ class TwoSidedField_b_s(TwoSidedField):
 
 
 class TwoSidedField_x0_x1(TwoSidedField):
+    """Learns the two data denoisers eta0 (model_eta0) and eta1 (model_eta1); loss_eta0 + loss_eta1.
+
+    v = alpha' eta0 + beta' eta1, etaz = (x_t - alpha eta0 - beta eta1) / gamma,
+    b = v + gamma' etaz, s = -etaz / gamma (etaz and s are 0 where |gamma| <= 1e-5).
+    """
     model_eta0: eqx.Module
     model_eta1: eqx.Module
 
@@ -310,6 +335,13 @@ class TwoSidedField_x0_x1(TwoSidedField):
 
 
 class TwoSidedField_b_eta1(TwoSidedField):
+    """Learns b (model_b) and eta1 (model_eta1); loss_b + loss_eta1.
+
+    eta0, etaz from the 2x2 system [alpha gamma; alpha' gamma'] (eta0, etaz) =
+    (x_t - beta eta1, b - beta' eta1), singular (both returned as 0) when
+    alpha gamma' - alpha' gamma = 0, e.g. wherever alpha = alpha' = 0.
+    v = alpha' eta0 + beta' eta1, s = -etaz / gamma.
+    """
     model_b: eqx.Module
     model_eta1: eqx.Module
 
@@ -388,14 +420,18 @@ class TwoSidedField_b_eta1(TwoSidedField):
 
 
 class OneSidedFlow(StochasticField):
+    """Stub: only fixes eta0 = 0; every other method is unimplemented."""
     def get_denoiser_eta0(self, x_t, t, *args):
         return jax.tree_util.tree_map(jnp.zeros_like, x_t)
 
 
 class OneSidedField_b(StochasticField):
     """
-    Solves for denoisers assuming interpolant x_t = gamma*e + beta*x1 (alpha=0).
+    Learns b (net); loss_b. For one-sided interpolants x_t = gamma*e + beta*x1 (alpha=0).
     Here eta_z estimates e, eta_1 estimates x1. eta_0 is 0.
+    eta_z, eta_1 from the 2x2 system [gamma beta; gamma' beta'] (eta_z, eta_1) = (x_t, b),
+    singular (both returned as 0) when gamma' beta - beta' gamma = 0;
+    s = -eta_z / gamma, v = beta' eta_1.
     """
     net: eqx.Module
 
@@ -469,7 +505,10 @@ class OneSidedField_b(StochasticField):
 
 class OneSidedField_eta1(StochasticField):
     """
-    One-sided field learning eta_1 directly.
+    One-sided field (alpha = 0) learning eta_1 directly (net); loss_eta1.
+    eta_z = (x_t - beta eta_1) / gamma, s = -eta_z / gamma, v = beta' eta_1.
+    get_velocity_b = gamma' eta_z + beta' eta_1 evaluated with t clamped to <= 0.99
+    and gamma floored at 1e-3, to limit the 1/gamma blow-up at t -> 1.
     """
     net: eqx.Module
 

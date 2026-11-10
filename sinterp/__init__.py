@@ -27,6 +27,7 @@ from sinterp.couplings import (
     SinkhornCoupling,
     ExactOTCoupling,
     ExactConditionalCoupling,
+    C2OTCoupling,
 )
 from sinterp.stochasticfield import (
     StochasticField,
@@ -41,7 +42,7 @@ from sinterp.stochasticfield import (
 )
 from sinterp.field_factory import field_factory, make_default_net_constructor
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "Interpolator",
@@ -62,6 +63,7 @@ __all__ = [
     "SinkhornCoupling",
     "ExactOTCoupling",
     "ExactConditionalCoupling",
+    "C2OTCoupling",
     "StochasticField",
     "TwoSidedField",
     "TwoSidedField_v_etaz",

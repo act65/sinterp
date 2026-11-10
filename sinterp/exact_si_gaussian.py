@@ -5,7 +5,8 @@ from sinterp.interpolants import LinearDeterministic
 
 def construct_covar_interp(interp):
     def interp_c(c1, c2, t):
-        return interp.alpha(t)**2 * c1 + interp.beta(t)**2 * c2 #+ interp.gamma(t)**2 * jnp.eye(c1.shape[0])
+        # Cov(x_t) for independent x0, x1, z; v below uses Cov(dx_t/dt, x_t) = 0.5 d/dt Cov(x_t)
+        return interp.alpha(t)**2 * c1 + interp.beta(t)**2 * c2 + interp.gamma(t)**2 * jnp.eye(c1.shape[0])
     return interp_c
 
 def construct_p_b_s(m1, m2, c1, c2, interp):

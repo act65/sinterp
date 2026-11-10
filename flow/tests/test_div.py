@@ -2,7 +2,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from flow.utils import divergence_jvp, divergence_hutchinson
+from flow.utils import divergence_jvp
 
 # --- Pytest Tests ---
 
@@ -76,39 +76,5 @@ def test_reshaped_input_divergence(div_func):
     div = div_func(image_fn)(x)
     assert jnp.allclose(div, expected_div)
 
-def test_hutchinson_vs_exact_large_n():
-    """
-    Tests that Hutchinson divergence estimator is close to exact divergence 
-    for a high-dimensional problem.
-    """
-    key = jax.random.PRNGKey(42)
-    d = 1000
-    x = jax.random.normal(key, (d,))
-    
-    # Define a function with non-trivial divergence
-    # f(x) = x * sin(x)
-    # J_ij = delta_ij * (sin(x_i) + x_i cos(x_i))
-    # Div = sum(sin(x) + x cos(x))
-    def fn(x):
-        return x * jnp.sin(x)
-        
-    exact_div = divergence_jvp(fn)(x)
-    
-    # Hutchinson estimator
-    # We average over a few samples to reduce variance for the test
-    n_samples = 500
-    keys = jax.random.split(key, n_samples)
-    
-    hutch_fn = divergence_hutchinson(fn)
-    
-    # vmap over keys
-    hutch_divs = jax.vmap(lambda k: hutch_fn(x, key=k))(keys)
-    mean_hutch_div = jnp.mean(hutch_divs)
-    
-    # For d=1000, relative error of single sample is ~sqrt(2/1000) ~ 4.5%
-    # With 100 samples, standard error of mean is 4.5% / 10 = 0.45%
-    # So they should be very close.
-    
-    # Check relative error
-    rel_error = jnp.abs(mean_hutch_div - exact_div) / jnp.abs(exact_div)
-    assert rel_error < 0.05, f"Hutchinson divergence relative error {rel_error} too high"
+# The Hutchinson estimator (unbiasedness and Gaussian-probe variance) is tested with
+# Monte-Carlo-standard-error tolerances in test_flow_claims.py.
