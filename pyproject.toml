@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sinterp-jax"
-version = "0.2.0"
-description = "Stochastic interpolants in JAX: interpolants, noise-data couplings (OT, C2OT, per-block Knothe-Rosenblatt), stochastic fields and exact Gaussian/GMM references."
+version = "0.3.0"
+description = "Stochastic interpolants and continuous normalizing flows in JAX. Two packages: sinterp (interpolants, stochastic fields, noise-data couplings incl. OT, C2OT and per-block Knothe-Rosenblatt, exact Gaussian/GMM references) and flow (ODE/SDE integration of learned vector fields, push-forward densities, divergence estimators)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -16,7 +16,7 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["numpy", "scipy", "matplotlib", "jax", "equinox", "ott-jax==0.6.0"]
+dependencies = ["numpy", "scipy", "matplotlib", "jax", "equinox", "diffrax", "ott-jax==0.6.0"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -25,7 +25,7 @@ dev = ["pytest"]
 Homepage = "https://github.com/act65/sinterp"
 
 [tool.setuptools.packages.find]
-include = ["sinterp*"]
+include = ["sinterp*", "flow*"]
 
 [tool.pytest.ini_options]
 markers = [
