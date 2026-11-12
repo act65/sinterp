@@ -317,6 +317,10 @@ class TestCouplingClaims:
         best = _brute_force_assignment(np.asarray(((x0[:, None] - x1[None]) ** 2).sum(-1)))
         assert jnp.allclose(x1o, x1[best], atol=2e-2)
 
+    @pytest.mark.skipif(
+        tuple(int(v) for v in jax.__version__.split(".")[:2]) < (0, 9) and jax.default_backend() == "cpu",
+        reason="jaxlib 0.6 on CPU aborts when this callback is compiled together with the cost "
+               "computation (XLA 'Could not convert JSON string to proto'); passes with jax >= 0.9")
     @pytest.mark.parametrize("w", [0.5, 3.0])
     @pytest.mark.parametrize("seed", range(3))
     def test_c2ot_fixed_w_minimises_combined_cost(self, w, seed):

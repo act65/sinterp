@@ -41,6 +41,12 @@ class Fn(eqx.Module):
 M = np.array([[-0.5, 1.0], [-1.0, 0.2]])
 
 
+
+# Newer jax has jax.enable_x64; older versions (e.g. 0.6) only jax.experimental.enable_x64.
+enable_x64 = getattr(jax, "enable_x64", None)
+if enable_x64 is None:
+    from jax.experimental import enable_x64
+
 def _linear_ode(x, t):
     return jnp.cos(3.0 * t) * (jnp.asarray(M, x.dtype) @ x)
 
@@ -55,7 +61,7 @@ def _linear_exact(x0):
 def test_integrator_convergence_order(cls, order):
     """Observed order log2(err(n) / err(2n)) must be within 0.15 of the theoretical order.
     Catches e.g. RK4 stage times off by dt/2 (drops to order 1-2 on a time-dependent field)."""
-    with jax.enable_x64(True):
+    with enable_x64(True):
         x0 = jnp.array([1.0, -0.5], dtype=jnp.float64)
         exact = _linear_exact(x0)
         ns = [16, 32, 64] if order == 4 else [32, 64, 128, 256]
@@ -68,7 +74,7 @@ def test_integrator_convergence_order(cls, order):
 def test_trajectory_endpoints_and_grid():
     """trajectory has n+1 states, starts at x0, ends at solve(), and state k is the solution
     at t = k/n (checked against the closed form with RK4 at small error)."""
-    with jax.enable_x64(True):
+    with enable_x64(True):
         x0 = jnp.array([1.0, -0.5], dtype=jnp.float64)
         n = 40
         rk = RK4(_linear_ode)
